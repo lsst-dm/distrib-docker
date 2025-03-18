@@ -1,0 +1,12 @@
+---
+name: Lint Markdown Files
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  call-workflow:
+    uses: lsst/rubin_workflows/.github/workflows/markdownlint.yaml@main
