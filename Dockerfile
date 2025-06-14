@@ -1,17 +1,14 @@
-FROM golang:latest as installer
-RUN git clone https://github.com/GoogleCloudPlatform/gcsfuse.git
-WORKDIR /go/gcsfuse
-RUN go build -o gcsfuse
-#FROM nginx
-FROM nginxinc/nginx-unprivileged
-USER root
-RUN apt-get update && apt-get install fuse -y
-COPY --from=installer /go/gcsfuse/gcsfuse /bin/
-#COPY ./nginx.conf /etc/nginx/sites-enabled/default
-#COPY ./nginx.conf /etc/nginx/nginx.conf
-COPY ./nginx.conf /etc/nginx/conf.d/default.conf
-USER nginx
-#RUN mkdir /eups
-COPY script.sh .
-EXPOSE 8080
-CMD ["sh", "script.sh"]
+FROM httpd:2.4
+
+RUN apt update \
+    && apt upgrade -y \
+    && apt install -y libcap2-bin \
+    && setcap 'cap_net_bind_service=+ep' /usr/local/apache2/bin/httpd \
+    && chown www-data:www-data /usr/local/apache2
+
+RUN setcap 'cap_net_bind_service=+ep' /usr/local/apache2/bin/httpd
+RUN getcap /usr/local/apache2/bin/httpd
+
+COPY httpd.conf /usr/local/apache2/conf/httpd.conf
+USER www-data
+
