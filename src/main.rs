@@ -120,6 +120,7 @@ async fn serve_gcs_content(
             bucket: bucket_name.clone(),
             prefix,
             delimiter: Some("/".to_string()),
+            max_results: Some(10000),
             ..Default::default()
         };
 
