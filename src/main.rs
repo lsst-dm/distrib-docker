@@ -2,15 +2,28 @@ use google_cloud_storage::client::{Client, ClientConfig};
 use google_cloud_storage::http::objects::download::Range;
 use google_cloud_storage::http::objects::get::GetObjectRequest;
 use google_cloud_storage::http::objects::list::ListObjectsRequest;
+use log::{LevelFilter, error, info};
 use std::convert::Infallible;
+use std::env;
 use time::format_description;
 use warp::{Filter, http::Response};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_default_env()
+        .filter_level(LevelFilter::Info)
+        .init();
+    info!("GCS Web Server starting...");
+    let bucket_name;
+    let args: Vec<String> = env::args().collect();
+    match args.get(1) {
+        Some(bucket) => bucket_name = bucket.to_string(),
+        None => panic!("No bucket was passed"),
+    }
+    info!("Connecting to bucket gs://{bucket_name}");
+
     let config = ClientConfig::default().with_auth().await?;
     let client = Client::new(config);
-    let bucket_name = "eups-prod".to_string();
 
     let client_filter = warp::any().map(move || client.clone());
     let bucket_filter = warp::any().map(move || bucket_name.clone());
@@ -20,7 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and(bucket_filter)
         .and_then(serve_gcs_content);
 
-    println!("Listening on  0.0.0.0:8080...");
     warp::serve(routes).run(([0, 0, 0, 0], 8080)).await;
 
     Ok(())
@@ -71,6 +83,7 @@ async fn serve_gcs_content(
             object: path_str.clone(),
             ..Default::default()
         };
+        info!("DOWNLOAD_REQUEST: path='{}'", path_str);
 
         let response = match client.download_object(&request, &Range::default()).await {
             Ok(data) => {
@@ -89,6 +102,12 @@ async fn serve_gcs_content(
                 } else {
                     "attachment"
                 };
+                info!(
+                    "DOWNLOAD_SUCCESS: file='{}', size={} bytes, disposition='{}'",
+                    path_str,
+                    data.len(),
+                    disposition
+                );
                 Response::builder()
                     .header(
                         "Content-Disposition",
@@ -98,7 +117,7 @@ async fn serve_gcs_content(
                     .unwrap()
             }
             Err(e) => {
-                eprintln!("Error downloading object: {:?}", e);
+                error!("DOWNLOAD_ERROR: file='{}', error='{:?}'", path_str, e);
                 Response::builder()
                     .status(404)
                     .body("File not found".as_bytes().to_vec())
@@ -115,6 +134,8 @@ async fn serve_gcs_content(
         } else {
             Some(format!("{}/", path_str.trim_end_matches('/')))
         };
+
+        info!("LISTING_REQUEST: path='{}'", path_str);
         let mut folders = Vec::new();
         let mut files = Vec::new();
         let mut next_page_token: Option<String> = None;
@@ -174,6 +195,13 @@ async fn serve_gcs_content(
             }
             next_page_token = objects.next_page_token;
         }
+        info!(
+            "LISTING_SUCCESS: path='{}', folders={}, files={}, total={}",
+            path_str,
+            folders.len(),
+            files.len(),
+            folders.len() + files.len()
+        );
 
         let html = build_html(path_str, folders, files);
 
