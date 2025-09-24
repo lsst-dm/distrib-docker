@@ -115,55 +115,64 @@ async fn serve_gcs_content(
         } else {
             Some(format!("{}/", path_str.trim_end_matches('/')))
         };
-
-        let list_req = ListObjectsRequest {
-            bucket: bucket_name.clone(),
-            prefix,
-            delimiter: Some("/".to_string()),
-            max_results: Some(10000),
-            ..Default::default()
-        };
-
-        let objects = match client.list_objects(&list_req).await {
-            Ok(objects) => objects,
-            Err(e) => {
-                eprintln!("Error listing objects: {:?}", e);
-                return Ok(Response::builder()
-                    .status(500)
-                    .body("Error listing content".as_bytes().to_vec())
-                    .unwrap());
-            }
-        };
-
         let mut folders = Vec::new();
         let mut files = Vec::new();
-        if let Some(prefixes) = objects.prefixes {
-            for prefix in prefixes {
-                folders.push(prefix);
+        let mut next_page_token: Option<String> = None;
+
+        // Currently we have folders with 10,000 files. So we have to loop this till we have
+        // no more page tokens.
+        loop {
+            let list_req = ListObjectsRequest {
+                bucket: bucket_name.clone(),
+                prefix: prefix.clone(),
+                delimiter: Some("/".to_string()),
+                max_results: Some(2500),
+                page_token: next_page_token,
+                ..Default::default()
+            };
+            let objects = match client.list_objects(&list_req).await {
+                Ok(objects) => objects,
+                Err(e) => {
+                    eprintln!("Error listing objects: {:?}", e);
+                    return Ok(Response::builder()
+                        .status(500)
+                        .body("Error listing content".as_bytes().to_vec())
+                        .unwrap());
+                }
+            };
+            if objects.prefixes.is_some() && list_req.page_token.is_none() {
+                for prefix in objects.prefixes.unwrap() {
+                    folders.push(prefix);
+                }
             }
-        }
-        if let Some(items) = objects.items {
-            for item in items {
-                // Do not include the directory itself in the file list
-                if item.name != path_str {
-                    let size = item.size;
-                    let filesize: String;
-                    if size > 1048576 {
-                        filesize = format!("{}M", (size as f64 / 1048576 as f64).round())
-                    } else if size > 1024 {
-                        filesize = format!("{}K", (size as f64 / 1024 as f64).round())
-                    } else {
-                        filesize = format!("{}", size)
-                    }
-                    if let Some(updated) = item.updated {
-                        let format =
-                            format_description::parse("[year]-[month]-[day] [hour]:[minute]")
-                                .unwrap();
-                        let u = updated.format(&format).unwrap();
-                        files.push((item.name, filesize, u));
+
+            if let Some(items) = objects.items {
+                for item in items {
+                    // Do not include the directory itself in the file list
+                    if item.name != path_str {
+                        let size = item.size;
+                        let filesize: String;
+                        if size > 1048576 {
+                            filesize = format!("{}M", (size as f64 / 1048576 as f64).round())
+                        } else if size > 1024 {
+                            filesize = format!("{}K", (size as f64 / 1024 as f64).round())
+                        } else {
+                            filesize = format!("{}", size)
+                        }
+                        if let Some(updated) = item.updated {
+                            let format =
+                                format_description::parse("[year]-[month]-[day] [hour]:[minute]")
+                                    .unwrap();
+                            let u = updated.format(&format).unwrap();
+                            files.push((item.name, filesize, u));
+                        }
                     }
                 }
             }
+            if objects.next_page_token.is_none() {
+                break;
+            }
+            next_page_token = objects.next_page_token;
         }
 
         let html = build_html(path_str, folders, files);
