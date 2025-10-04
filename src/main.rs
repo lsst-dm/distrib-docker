@@ -6,6 +6,7 @@ use log::{LevelFilter, error, info};
 use std::convert::Infallible;
 use std::env;
 use time::format_description;
+use warp::http::StatusCode;
 use warp::{Filter, http::Response};
 
 #[tokio::main]
@@ -14,12 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter_level(LevelFilter::Info)
         .init();
     info!("GCS Web Server starting...");
-    let bucket_name;
     let args: Vec<String> = env::args().collect();
-    match args.get(1) {
-        Some(bucket) => bucket_name = bucket.to_string(),
+    let bucket_name = match args.get(1) {
+        Some(bucket) => bucket.to_string(),
         None => panic!("No bucket was passed"),
-    }
+    };
     info!("Connecting to bucket gs://{bucket_name}");
 
     let config = ClientConfig::default().with_auth().await?;
@@ -33,22 +33,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and(bucket_filter)
         .and_then(serve_gcs_content);
 
-    warp::serve(routes).run(([0, 0, 0, 0], 8080)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], 8585)).await;
 
     Ok(())
 }
 
-async fn check_for_dirs(client: &Client, bucket: String, path: String) -> bool {
+async fn check_for_dirs(
+    client: &Client,
+    bucket: String,
+    path: String,
+) -> Option<Response<Vec<u8>>> {
+    if path.ends_with('/') || path.is_empty() {
+        return None;
+    }
     let list_req_test_prefix = ListObjectsRequest {
         bucket,
         prefix: Some(format!("{}/", path)),
         delimiter: Some("/".to_string()),
+        max_results: Some(1), // Fast check: only need 1 result to confirm existence
         ..Default::default()
     };
-    client
-        .list_objects(&list_req_test_prefix)
-        .await
-        .is_ok_and(|res| res.prefixes.is_some() || res.items.is_some())
+    match client.list_objects(&list_req_test_prefix).await {
+        Ok(res) => {
+            // If any prefixes (sub-folders) or items (files) exist, it's a folder.
+            if res.prefixes.is_some() || res.items.is_some() {
+                let new_path = format!("/{}/", path);
+                info!("REDIRECT: path='{}' -> '{}'", path, new_path);
+
+                // Return a 302 Found response to redirect the browser
+                let res = Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("Location", new_path)
+                    .body(Vec::new())
+                    .unwrap();
+                return Some(res);
+            }
+        }
+        Err(e) => {
+            error!("REDIRECT_CHECK_ERROR: path='{}', error='{:?}'", path, e);
+        }
+    }
+    None
+    // client
+    //     .list_objects(&list_req_test_prefix)
+    //     .await
+    //     .is_ok_and(|res| res.prefixes.is_some() || res.items.is_some())
 }
 
 async fn serve_gcs_content(
@@ -70,10 +99,8 @@ async fn serve_gcs_content(
     let file_metadata = client.get_object(&file_req).await;
 
     // Check if a path without a trailing slash is a directory
-    let is_dir_no_slash = if !is_dir && !path_str.is_empty() {
-        check_for_dirs(&client, bucket_name.clone(), path_str.clone()).await
-    } else {
-        false
+    if let Some(res) = check_for_dirs(&client, bucket_name.clone(), path_str.clone()).await {
+        return Ok(res);
     };
 
     // If metadata is found, it's a file. Serve the download.
@@ -128,7 +155,7 @@ async fn serve_gcs_content(
     }
 
     // If it's a directory (either with or without a trailing slash), list its contents
-    if is_dir || path_str.is_empty() || is_dir_no_slash {
+    if is_dir || path_str.is_empty() {
         let prefix = if path_str.is_empty() {
             None
         } else {
@@ -224,20 +251,18 @@ fn build_html(
 ) -> String {
     let parent_path = if path_str.is_empty() {
         "".to_string()
+    } else if path_str.ends_with("/") {
+        str::trim_end_matches(&path_str, '/')
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_string()
     } else {
-        if path_str.ends_with("/") {
-            str::trim_end_matches(&path_str, '/')
-                .rsplit_once('/')
-                .map_or("", |(parent, _)| parent)
-                .to_string()
-        } else {
-            path_str
-                .rsplit_once('/')
-                .map_or("", |(parent, _)| parent)
-                .to_string()
-        }
+        path_str
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_string()
     };
-    let html = format!(
+    format!(
             r#"
 <!DOCTYPE html>
 <html>
@@ -286,7 +311,7 @@ fn build_html(
                 .map(|f| format!(
                     "<tr><td><i class=\"fa-solid fa-folder\"></i></td> <td><a href=\"/{}\">{}</a></td><td align=\"right\">-</td><td align=\"right\">-</td></tr>",
                     f,
-                    f.trim_end_matches('/').split('/').last().unwrap_or("")
+                    f.trim_end_matches('/').split('/').next_back().unwrap_or("")
                 ))
                 .collect::<String>(),
             files
@@ -294,11 +319,10 @@ fn build_html(
                 .map(|(name, size, updated)| format!(
                     r#"<tr><td><i class="fa-solid fa-file"></i></td> <td><a href="/{}">{}</a></td><td align="right">{}</td><td align="right">{}</td></tr>"#,
                     name,
-                    name.split('/').last().unwrap_or(""),
+                    name.split('/').next_back().unwrap_or(""),
                     size,
                     updated
                 ))
                 .collect::<String>()
-        );
-    return html;
+        )
 }
