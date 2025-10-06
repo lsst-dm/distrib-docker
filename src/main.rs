@@ -114,7 +114,7 @@ async fn serve_gcs_content(
 
         let response = match client.download_object(&request, &Range::default()).await {
             Ok(data) => {
-                let filename = path_str.split('/').last().unwrap_or("file");
+                let filename = path_str.split('/').next_back().unwrap_or("file");
 
                 // Get content type, diplay text files for config.txt
                 let content_type = file_metadata
@@ -201,9 +201,9 @@ async fn serve_gcs_content(
                         let size = item.size;
                         let filesize: String;
                         if size > 1048576 {
-                            filesize = format!("{}M", (size as f64 / 1048576 as f64).round())
+                            filesize = format!("{}M", (size as f64 / 1048576_f64).round())
                         } else if size > 1024 {
-                            filesize = format!("{}K", (size as f64 / 1024 as f64).round())
+                            filesize = format!("{}K", (size as f64 / 1024_f64).round())
                         } else {
                             filesize = format!("{}", size)
                         }
