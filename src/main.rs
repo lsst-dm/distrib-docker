@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and(bucket_filter)
         .and_then(serve_gcs_content);
 
-    warp::serve(routes).run(([0, 0, 0, 0], 8585)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], 8080)).await;
 
     Ok(())
 }
@@ -74,10 +74,6 @@ async fn check_for_dirs(
         }
     }
     None
-    // client
-    //     .list_objects(&list_req_test_prefix)
-    //     .await
-    //     .is_ok_and(|res| res.prefixes.is_some() || res.items.is_some())
 }
 
 async fn serve_gcs_content(
@@ -244,6 +240,7 @@ async fn serve_gcs_content(
         .body("Not Found".as_bytes().to_vec())
         .unwrap())
 }
+
 fn build_html(
     path_str: String,
     folders: Vec<String>,
@@ -317,8 +314,10 @@ fn build_html(
             files
                 .iter()
                 .map(|(name, size, updated)| format!(
-                    r#"<tr><td><i class="fa-solid fa-file"></i></td> <td><a href="/{}">{}</a></td><td align="right">{}</td><td align="right">{}</td></tr>"#,
-                    name,
+                    r#"<tr><td><i class="fa-solid fa-file"></i></td> <td><a href="{}">{}</a></td><td align="right">{}</td><td align="right">{}</td></tr>"#,
+                    // **CHANGE: Use only the file name for the relative HREF attribute**
+                    name.split('/').next_back().unwrap_or(""),
+                    // Use only the file name for the display text
                     name.split('/').next_back().unwrap_or(""),
                     size,
                     updated
