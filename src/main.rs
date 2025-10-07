@@ -5,6 +5,7 @@ use google_cloud_storage::http::objects::list::ListObjectsRequest;
 use log::{LevelFilter, error, info};
 use std::convert::Infallible;
 use std::env;
+use std::net::SocketAddr;
 use time::format_description;
 use warp::http::StatusCode;
 use warp::{Filter, http::Response};
@@ -27,8 +28,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client_filter = warp::any().map(move || client.clone());
     let bucket_filter = warp::any().map(move || bucket_name.clone());
+    // Filter to get the client's IP address (SocketAddr)
+    let remote_addr_filter = warp::addr::remote();
+
+    // Filter to get the User-Agent header
+    let user_agent_filter = warp::header::optional("user-agent");
 
     let routes = warp::path::full()
+        .and(remote_addr_filter)
+        .and(user_agent_filter)
         .and(client_filter)
         .and(bucket_filter)
         .and_then(serve_gcs_content);
@@ -38,6 +46,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn is_bot(user_agent: &str) -> bool {
+    let ua = user_agent.to_lowercase();
+    ua.contains("bot")
+        || ua.contains("spider")
+        || ua.contains("scrap")
+        || ua.contains("googlebot")
+        || ua.contains("bingbot")
+        || ua.contains("http client")
+}
 async fn check_for_dirs(
     client: &Client,
     bucket: String,
@@ -78,10 +95,17 @@ async fn check_for_dirs(
 
 async fn serve_gcs_content(
     path: warp::path::FullPath,
+    remote_addr: Option<SocketAddr>,
+    user_agent: Option<String>,
     client: Client,
     bucket_name: String,
 ) -> Result<impl warp::Reply, Infallible> {
     let path_str = path.as_str().trim_start_matches('/').to_string();
+    let client_ip = remote_addr
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let user_agent = user_agent.unwrap_or_else(|| "none".to_string());
+    let is_scrapper = is_bot(user_agent.as_str());
 
     // The GCS API is a flat hierarchy. A "folder" is just an object prefix.
     let is_dir = path_str.ends_with('/');
@@ -106,7 +130,10 @@ async fn serve_gcs_content(
             object: path_str.clone(),
             ..Default::default()
         };
-        info!("DOWNLOAD_REQUEST: path='{}'", path_str);
+        info!(
+            "DOWNLOAD_REQUEST: path='{}', user-agent='{}', ip='{}', scrapper={}",
+            path_str, user_agent, client_ip, is_scrapper
+        );
 
         let response = match client.download_object(&request, &Range::default()).await {
             Ok(data) => {
@@ -126,10 +153,13 @@ async fn serve_gcs_content(
                     "attachment"
                 };
                 info!(
-                    "DOWNLOAD_SUCCESS: file='{}', size={} bytes, disposition='{}'",
+                    "DOWNLOAD_SUCCESS: file='{}', size={} bytes, disposition='{}', user-agent='{}', ip='{}', scrapper={}",
                     path_str,
                     data.len(),
-                    disposition
+                    disposition,
+                    user_agent,
+                    client_ip,
+                    is_scrapper
                 );
                 Response::builder()
                     .header(
@@ -140,7 +170,10 @@ async fn serve_gcs_content(
                     .unwrap()
             }
             Err(e) => {
-                error!("DOWNLOAD_ERROR: file='{}', error='{:?}'", path_str, e);
+                error!(
+                    "DOWNLOAD_ERROR: file='{}', user-agent='{}', ip='{}', scrapper={}, error='{:?}'",
+                    path_str, user_agent, client_ip, is_scrapper, e
+                );
                 Response::builder()
                     .status(404)
                     .body("File not found".as_bytes().to_vec())
@@ -158,7 +191,10 @@ async fn serve_gcs_content(
             Some(format!("{}/", path_str.trim_end_matches('/')))
         };
 
-        info!("LISTING_REQUEST: path='{}'", path_str);
+        info!(
+            "LISTING_REQUEST: path='{}', user-agent='{}', ip='{}', scrapper={}",
+            path_str, user_agent, client_ip, is_scrapper
+        );
         let mut folders = Vec::new();
         let mut files = Vec::new();
         let mut next_page_token: Option<String> = None;
@@ -219,11 +255,14 @@ async fn serve_gcs_content(
             next_page_token = objects.next_page_token;
         }
         info!(
-            "LISTING_SUCCESS: path='{}', folders={}, files={}, total={}",
+            "LISTING_SUCCESS: path='{}', folders={}, files={}, total={}, user-agent='{}', ip='{}', scrapper={}",
             path_str,
             folders.len(),
             files.len(),
-            folders.len() + files.len()
+            folders.len() + files.len(),
+            user_agent,
+            client_ip,
+            is_scrapper
         );
 
         let html = build_html(path_str, folders, files);
