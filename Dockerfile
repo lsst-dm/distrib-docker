@@ -1,4 +1,4 @@
-FROM rust:1.87 AS builder
+FROM rust:latest AS builder
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
@@ -20,7 +20,7 @@ FROM debian:latest
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 1001 eups \
-    && useradd --uid 1001 --gid 1001 -m eups
+  && useradd --uid 1001 --gid 1001 -m eups
 
 WORKDIR /app
 
@@ -34,4 +34,3 @@ USER eups
 
 # The command to run the application
 CMD ["./gcs-indexer-rs","eups-prod"]
-
